@@ -124,7 +124,10 @@ jobs:
             python3-pip \
             device-tree-compiler \
             cpio \
-            rsync
+            rsync \
+            ccache \
+            fakeroot \
+            lz4
 
           # Install repo tool
           mkdir -p ~/.bin
@@ -156,6 +159,21 @@ jobs:
           fi
 
           chmod +x build_kernel.sh
+
+          # Install mkbootimg if not present
+          if ! command -v mkbootimg.py &> /dev/null; then
+            echo "Installing mkbootimg..."
+            # Check if mkbootimg.py exists in the kernel source
+            if [ -f "mkbootimg.py" ]; then
+              chmod +x mkbootimg.py
+              sudo ln -sf $(pwd)/mkbootimg.py /usr/local/bin/mkbootimg.py
+            else
+              # Download from Android source
+              wget https://raw.githubusercontent.com/osm0sis/mkbootimg/master/mkbootimg.py
+              chmod +x mkbootimg.py
+              sudo mv mkbootimg.py /usr/local/bin/
+            fi
+          fi
 
           # Download toolchain if not included
           if [ ! -d "toolchain" ] && [ ! -d "prebuilts" ]; then
@@ -193,6 +211,15 @@ jobs:
           # Add toolchain to PATH if it exists
           if [ -d "toolchain/bin" ]; then
             export PATH="$PWD/toolchain/bin:$PATH"
+          fi
+
+          # Make sure all scripts are executable
+          chmod +x build_kernel.sh
+          if [ -f "ramdisk_fix_permissions.sh" ]; then
+            chmod +x ramdisk_fix_permissions.sh
+          fi
+          if [ -f "mkbootimg.py" ]; then
+            chmod +x mkbootimg.py
           fi
 
           # Execute compilation script

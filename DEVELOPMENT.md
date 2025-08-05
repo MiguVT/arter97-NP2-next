@@ -62,7 +62,10 @@ sudo apt-get install -y \
     device-tree-compiler \
     cpio \
     rsync \
-    jq
+    jq \
+    ccache \
+    fakeroot \
+    lz4
 ```
 
 ### Test API access
