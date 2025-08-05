@@ -65,7 +65,9 @@ sudo apt-get install -y \
     jq \
     ccache \
     fakeroot \
-    lz4
+    lz4 \
+    android-tools-mkbootimg \
+    android-sdk-platform-tools-common
 ```
 
 ### Test API access

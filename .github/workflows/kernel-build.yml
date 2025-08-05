@@ -127,7 +127,9 @@ jobs:
             rsync \
             ccache \
             fakeroot \
-            lz4
+            lz4 \
+            android-tools-mkbootimg \
+            android-sdk-platform-tools-common
 
           # Install repo tool
           mkdir -p ~/.bin
@@ -148,7 +150,6 @@ jobs:
 
       - name: Set up Android build tools
         run: |
-          # Download necessary Android tools
           cd kernel_source
 
           # Check if build_kernel.sh exists
@@ -160,25 +161,43 @@ jobs:
 
           chmod +x build_kernel.sh
 
-          # Install mkbootimg if not present
-          if ! command -v mkbootimg.py &> /dev/null; then
-            echo "Installing mkbootimg..."
-            # Check if mkbootimg.py exists in the kernel source
-            if [ -f "mkbootimg.py" ]; then
+          # Setup mkbootimg.py - Use official AOSP version only
+          echo "Setting up official AOSP mkbootimg.py..."
+
+          # Check if mkbootimg.py exists in kernel source
+          if [ -f "mkbootimg.py" ]; then
+            echo "Found mkbootimg.py in kernel source - using it"
+            chmod +x mkbootimg.py
+          else
+            echo "Downloading official AOSP mkbootimg.py..."
+            # Download the exact same mkbootimg.py that arter97 kernel expects
+            wget -O mkbootimg_base64.txt "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/main/mkbootimg.py?format=TEXT"
+
+            if [ $? -eq 0 ]; then
+              # Decode from base64 (googlesource returns base64 encoded)
+              base64 -d mkbootimg_base64.txt > mkbootimg.py
+              rm mkbootimg_base64.txt
               chmod +x mkbootimg.py
-              sudo ln -sf $(pwd)/mkbootimg.py /usr/local/bin/mkbootimg.py
+              echo "AOSP mkbootimg.py downloaded and configured successfully"
             else
-              # Download from Android source
-              wget https://raw.githubusercontent.com/osm0sis/mkbootimg/master/mkbootimg.py
-              chmod +x mkbootimg.py
-              sudo mv mkbootimg.py /usr/local/bin/
+              echo "ERROR: Failed to download mkbootimg.py from AOSP"
+              echo "This is required for building Android boot images"
+              exit 1
             fi
+          fi
+
+          # Verify mkbootimg.py is working
+          python3 mkbootimg.py --help >/dev/null 2>&1
+          if [ $? -eq 0 ]; then
+            echo "✅ mkbootimg.py is working correctly"
+          else
+            echo "❌ mkbootimg.py verification failed"
+            exit 1
           fi
 
           # Download toolchain if not included
           if [ ! -d "toolchain" ] && [ ! -d "prebuilts" ]; then
             echo "Setting up toolchain..."
-            # Use AOSP toolchain
             git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 toolchain
           fi
 
