@@ -295,9 +295,10 @@ jobs:
           export LLVM=1
           export LLVM_IAS=1
 
-          # Fix for Clang -ftrivial-auto-var-init=zero error
-          export KCFLAGS="-Wno-error=unused-command-line-argument-hard-error-in-future -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
-          export KAFLAGS="-Wno-error=unused-command-line-argument-hard-error-in-future -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
+          # Fix for Clang -ftrivial-auto-var-init=zero error - Override the CONFIG check
+          export KCFLAGS="-Wno-error=unused-command-line-argument-hard-error-in-future"
+          export KAFLAGS="-Wno-error=unused-command-line-argument-hard-error-in-future"
+          export CONFIG_CC_HAS_AUTO_VAR_INIT_ZERO_ENABLER=y
 
           # Add toolchain to PATH if it exists (fallback)
           if [ -d "toolchain/bin" ]; then
@@ -349,7 +350,7 @@ jobs:
           echo "Created symlinks for hardcoded paths:"
           ls -la /home/arter97/android/nathan/llvm-20.1.8-x86_64/bin/
 
-          # Additional compiler flags to fix Clang issues
+          # Additional compiler flags to fix Clang issues - Force enable the flag
           export KBUILD_CFLAGS_KERNEL="-Wno-error=unused-command-line-argument-hard-error-in-future -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
           export KBUILD_CFLAGS="-Wno-error=unused-command-line-argument-hard-error-in-future -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
           export CFLAGS_KERNEL="-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
