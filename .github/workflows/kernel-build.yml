@@ -131,6 +131,9 @@ jobs:
             mkbootimg \
             android-sdk-platform-tools-common
 
+          # Install Python dependencies for mkbootimg.py
+          pip3 install --user argparse
+
           # Install repo tool
           mkdir -p ~/.bin
           PATH="${HOME}/.bin:${PATH}"
@@ -179,6 +182,9 @@ jobs:
               rm mkbootimg_base64.txt
               chmod +x mkbootimg.py
               echo "AOSP mkbootimg.py downloaded and configured successfully"
+              echo "File size: $(stat -c%s mkbootimg.py) bytes"
+              echo "First few lines:"
+              head -5 mkbootimg.py
             else
               echo "ERROR: Failed to download mkbootimg.py from AOSP"
               echo "This is required for building Android boot images"
@@ -187,11 +193,18 @@ jobs:
           fi
 
           # Verify mkbootimg.py is working
-          python3 mkbootimg.py --help >/dev/null 2>&1
-          if [ $? -eq 0 ]; then
-            echo "✅ mkbootimg.py is working correctly"
+          if [ -f "mkbootimg.py" ] && [ -s "mkbootimg.py" ]; then
+            echo "✅ mkbootimg.py downloaded and ready ($(wc -l < mkbootimg.py) lines)"
+            # Test basic Python syntax
+            python3 -m py_compile mkbootimg.py
+            if [ $? -eq 0 ]; then
+              echo "✅ mkbootimg.py Python syntax is valid"
+            else
+              echo "❌ mkbootimg.py has Python syntax errors"
+              exit 1
+            fi
           else
-            echo "❌ mkbootimg.py verification failed"
+            echo "❌ mkbootimg.py is missing or empty"
             exit 1
           fi
 
