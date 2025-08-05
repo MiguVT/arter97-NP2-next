@@ -129,7 +129,8 @@ jobs:
             fakeroot \
             lz4 \
             mkbootimg \
-            android-sdk-platform-tools-common
+            android-sdk-platform-tools-common \
+            jq
 
           # Install Python dependencies for mkbootimg.py
           pip3 install --user argparse
@@ -139,6 +140,23 @@ jobs:
           PATH="${HOME}/.bin:${PATH}"
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
           chmod a+rx ~/.bin/repo
+
+          # Download and setup Android NDK for clang compiler
+          echo "Setting up Android NDK..."
+          cd /tmp
+          wget -q https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
+          if [ $? -ne 0 ]; then
+            echo "❌ Failed to download Android NDK r25c"
+            echo "Trying alternative NDK version..."
+            wget -q https://dl.google.com/android/repository/android-ndk-r24-linux.zip
+            unzip -q android-ndk-r24-linux.zip
+            sudo mv android-ndk-r24 /opt/android-ndk
+          else
+            unzip -q android-ndk-r25c-linux.zip
+            sudo mv android-ndk-r25c /opt/android-ndk
+          fi
+          echo "Android NDK installed to /opt/android-ndk"
+          ls -la /opt/android-ndk/ | head -5
 
       - name: Download kernel source
         run: |
@@ -225,9 +243,14 @@ jobs:
           # Verify integration was successful
           if [ -d "KernelSU" ]; then
             echo "KernelSU Next integration successful"
-            ls -la KernelSU/
+            ls -la KernelSU/ | head -5
+          elif [ -d "KernelSU-Next" ]; then
+            echo "KernelSU Next directory found as KernelSU-Next"
+            ls -la KernelSU-Next/ | head -5
           else
             echo "Warning: KernelSU directory not found after integration"
+            echo "Available directories:"
+            ls -la | grep -i kernel || echo "No kernel-related directories found"
           fi
 
       - name: Build kernel
@@ -240,7 +263,39 @@ jobs:
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
 
-          # Add toolchain to PATH if it exists
+          # Set up Android NDK clang toolchain paths
+          export ANDROID_NDK_ROOT=/opt/android-ndk
+          export NDK_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64"
+
+          # Verify NDK installation
+          if [ ! -d "$NDK_CLANG_PATH" ]; then
+            echo "❌ NDK clang toolchain not found at $NDK_CLANG_PATH"
+            echo "Available directories in NDK:"
+            find /opt/android-ndk -type d -name "*clang*" -o -name "*llvm*" | head -10
+            echo "Trying to find correct path..."
+            NDK_CLANG_PATH=$(find /opt/android-ndk -type d -name "prebuilt" | grep linux-x86_64 | head -1)
+            if [ -z "$NDK_CLANG_PATH" ]; then
+              echo "❌ Could not find NDK toolchain"
+              exit 1
+            fi
+            echo "Found NDK toolchain at: $NDK_CLANG_PATH"
+          fi
+
+          export PATH="$NDK_CLANG_PATH/bin:$PATH"
+
+          # Override compiler settings to use Android NDK clang
+          export CC="$NDK_CLANG_PATH/bin/clang"
+          export CXX="$NDK_CLANG_PATH/bin/clang++"
+          export CLANG_TRIPLE=aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+
+          # Additional environment variables to override kernel build system
+          export HOSTCC="$NDK_CLANG_PATH/bin/clang"
+          export HOSTCXX="$NDK_CLANG_PATH/bin/clang++"
+          export LLVM=1
+          export LLVM_IAS=1
+
+          # Add toolchain to PATH if it exists (fallback)
           if [ -d "toolchain/bin" ]; then
             export PATH="$PWD/toolchain/bin:$PATH"
           fi
@@ -254,10 +309,57 @@ jobs:
             chmod +x mkbootimg.py
           fi
 
-          # Execute compilation script
-          bash build_kernel.sh
+          echo "Compiler setup:"
+          echo "CC=$CC"
+          echo "CXX=$CXX"
+          echo "HOSTCC=$HOSTCC"
+          echo "CROSS_COMPILE=$CROSS_COMPILE"
+          echo "LLVM=$LLVM"
+          echo "NDK_CLANG_PATH=$NDK_CLANG_PATH"
 
-          echo "Kernel compilation completed"
+          # Verify clang is accessible
+          if [ -f "$NDK_CLANG_PATH/bin/clang" ]; then
+            echo "✅ clang found at $NDK_CLANG_PATH/bin/clang"
+            "$NDK_CLANG_PATH/bin/clang" --version | head -2
+          else
+            echo "❌ clang not found at expected path"
+            echo "Available files in bin directory:"
+            ls -la "$NDK_CLANG_PATH/bin/" | head -10
+            exit 1
+          fi
+
+          # Create symlinks to override hardcoded paths in arter97 kernel
+          echo "Creating symlinks for hardcoded paths..."
+          sudo mkdir -p /home/arter97/android/nathan/llvm-20.1.8-x86_64/bin
+
+          # Only create symlinks if the source files exist
+          for tool in clang clang++ ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-readelf llvm-strip; do
+            if [ -f "$NDK_CLANG_PATH/bin/$tool" ]; then
+              sudo ln -sf "$NDK_CLANG_PATH/bin/$tool" "/home/arter97/android/nathan/llvm-20.1.8-x86_64/bin/$tool"
+              echo "✅ Created symlink for $tool"
+            else
+              echo "⚠️  Tool $tool not found in NDK, skipping"
+            fi
+          done
+
+          echo "Created symlinks for hardcoded paths:"
+          ls -la /home/arter97/android/nathan/llvm-20.1.8-x86_64/bin/
+
+          # Execute compilation script
+          echo "🚀 Starting kernel compilation..."
+          echo "Current directory: $(pwd)"
+          echo "Build script exists: $([ -f build_kernel.sh ] && echo "✅ Yes" || echo "❌ No")"
+
+          if ! bash build_kernel.sh; then
+            echo "❌ Kernel compilation failed"
+            echo "Checking for error logs..."
+            find . -name "*.log" -o -name "*error*" | head -10
+            echo "Available makefiles and configs:"
+            find . -name "Makefile" -o -name "*defconfig" | head -10
+            exit 1
+          fi
+
+          echo "✅ Kernel compilation completed successfully"
 
           # Verify generated files
           echo "Generated files:"
@@ -269,6 +371,13 @@ jobs:
           mkdir -p artifacts
           cd kernel_source
 
+          echo "📦 Searching for generated files..."
+          echo "All .img files in kernel source:"
+          find . -name "*.img" -type f
+
+          echo "All files matching boot pattern:"
+          find . -name "*boot*" -type f | head -10
+
           # Search and copy boot.img files
           find . -name "boot.img" -type f -exec cp {} ../artifacts/ \;
           find . -name "arter97-kernel-*-boot.img" -type f -exec cp {} ../artifacts/ \;
@@ -277,6 +386,11 @@ jobs:
           if [ ! "$(ls -A ../artifacts/)" ]; then
             echo "No boot.img files found, searching for other image files..."
             find . -name "*.img" -type f -exec cp {} ../artifacts/ \;
+
+            # Also look for other potential kernel files
+            find . -name "Image" -type f -exec cp {} ../artifacts/ \;
+            find . -name "Image.gz" -type f -exec cp {} ../artifacts/ \;
+            find . -name "zImage" -type f -exec cp {} ../artifacts/ \;
           fi
 
           # Create build information
@@ -299,49 +413,34 @@ jobs:
 
       - name: Create Release
         if: success()
-        uses: actions/create-release@v1
+        run: |
+          # Create release using GitHub CLI
+          RELEASE_TAG="${{ needs.check-versions.outputs.kernelsu-release }}-${{ needs.check-versions.outputs.kernel-tag }}"
+          RELEASE_NAME="KernelSU ${{ needs.check-versions.outputs.kernelsu-release }} + Kernel ${{ needs.check-versions.outputs.kernel-tag }}"
+
+          RELEASE_BODY="## Auto-compiled Kernel with KernelSU Next
+
+          **Kernel Source:** arter97/android_kernel_nothing_sm8475@${{ needs.check-versions.outputs.kernel-tag }}
+          **KernelSU Version:** ${{ needs.check-versions.outputs.kernelsu-release }}
+          **Build Date:** $(date)
+
+          ### Changes
+          - New kernel tag: ${{ needs.check-versions.outputs.new-kernel-tag == 'true' && '✅' || '❌' }}
+          - New KernelSU release: ${{ needs.check-versions.outputs.new-kernelsu-release == 'true' && '✅' || '❌' }}
+
+          ### Installation
+          Flash the \`boot.img\` or \`arter97-kernel-*-boot.img\` file using fastboot or custom recovery.
+
+          **Warning:** This is an automatically compiled kernel. Use at your own risk."
+
+          # Create the release
+          gh release create "$RELEASE_TAG" \
+            --title "$RELEASE_NAME" \
+            --notes "$RELEASE_BODY" \
+            --target main \
+            artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ needs.check-versions.outputs.kernelsu-release }}-${{ needs.check-versions.outputs.kernel-tag }}
-          release_name: KernelSU ${{ needs.check-versions.outputs.kernelsu-release }} + Kernel ${{ needs.check-versions.outputs.kernel-tag }}
-          body: |
-            ## Auto-compiled Kernel with KernelSU Next
-
-            **Kernel Source:** arter97/android_kernel_nothing_sm8475@${{ needs.check-versions.outputs.kernel-tag }}
-            **KernelSU Version:** ${{ needs.check-versions.outputs.kernelsu-release }}
-            **Build Date:** $(date)
-
-            ### Changes
-            - New kernel tag: ${{ needs.check-versions.outputs.new-kernel-tag == 'true' && '✅' || '❌' }}
-            - New KernelSU release: ${{ needs.check-versions.outputs.new-kernelsu-release == 'true' && '✅' || '❌' }}
-
-            ### Installation
-            Flash the `boot.img` or `arter97-kernel-*-boot.img` file using fastboot or custom recovery.
-
-            **Warning:** This is an automatically compiled kernel. Use at your own risk.
-          draft: false
-          prerelease: false
-
-      - name: Upload Release Assets
-        if: success()
-        run: |
-          # Get the ID of the newly created release
-          RELEASE_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ needs.check-versions.outputs.kernelsu-release }}-${{ needs.check-versions.outputs.kernel-tag }}" \
-            | jq -r '.id')
-
-          # Upload all artifact files as release assets
-          cd artifacts
-          for file in *; do
-            if [ -f "$file" ]; then
-              echo "Uploading $file..."
-              curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                -H "Content-Type: application/octet-stream" \
-                --data-binary @"$file" \
-                "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$file"
-            fi
-          done
 
       - name: Update version tracking
         if: success()
