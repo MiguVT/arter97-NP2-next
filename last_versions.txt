@@ -1,0 +1,5 @@
+# File to track last processed versions
+# This file is automatically updated by the workflow
+KERNEL_TAG=
+KERNELSU_RELEASE=
+LAST_BUILD_DATE=

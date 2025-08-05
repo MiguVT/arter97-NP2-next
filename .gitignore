@@ -1,0 +1,19 @@
+# Build logs and artifacts
+build_*/
+*.log
+*.img
+*.zip
+
+# Temporary directories
+temp/
+tmp/
+
+# Artifacts
+artifacts/
+
+# IDE configuration
+.vscode/
+.idea/
+
+# Cache files
+*.cache

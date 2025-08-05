@@ -1,0 +1,308 @@
+name: Auto Build Kernel with KernelSU Next
+
+on:
+  schedule:
+    # Run every 30 minutes to check for new releases/tags
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    # Allow manual execution
+    inputs:
+      force_build:
+        description: 'Force build even if no new versions'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  check-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      new-kernel-tag: ${{ steps.check.outputs.new-kernel-tag }}
+      new-kernelsu-release: ${{ steps.check.outputs.new-kernelsu-release }}
+      should-build: ${{ steps.check.outputs.should-build }}
+      kernel-tag: ${{ steps.check.outputs.kernel-tag }}
+      kernelsu-release: ${{ steps.check.outputs.kernelsu-release }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for new versions
+        id: check
+        run: |
+          # Get latest tag from arter97 kernel
+          LATEST_KERNEL_TAG=$(curl -s https://api.github.com/repos/arter97/android_kernel_nothing_sm8475/tags | jq -r '.[0].name')
+          echo "Latest kernel tag: $LATEST_KERNEL_TAG"
+
+          # Get latest release from KernelSU Next
+          LATEST_KERNELSU_RELEASE=$(curl -s https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/latest | jq -r '.tag_name')
+          echo "Latest KernelSU release: $LATEST_KERNELSU_RELEASE"
+
+          # Read previously processed versions
+          LAST_KERNEL_TAG=""
+          LAST_KERNELSU_RELEASE=""
+
+          if [ -f "last_versions.txt" ]; then
+            LAST_KERNEL_TAG=$(grep "KERNEL_TAG=" last_versions.txt | cut -d'=' -f2)
+            LAST_KERNELSU_RELEASE=$(grep "KERNELSU_RELEASE=" last_versions.txt | cut -d'=' -f2)
+          fi
+
+          echo "Last processed kernel tag: $LAST_KERNEL_TAG"
+          echo "Last processed KernelSU release: $LAST_KERNELSU_RELEASE"
+
+          # Check for new versions
+          NEW_KERNEL_TAG="false"
+          NEW_KERNELSU_RELEASE="false"
+          SHOULD_BUILD="false"
+
+          if [ "$LATEST_KERNEL_TAG" != "$LAST_KERNEL_TAG" ]; then
+            NEW_KERNEL_TAG="true"
+            SHOULD_BUILD="true"
+            echo "New kernel tag detected: $LATEST_KERNEL_TAG"
+          fi
+
+          if [ "$LATEST_KERNELSU_RELEASE" != "$LAST_KERNELSU_RELEASE" ]; then
+            NEW_KERNELSU_RELEASE="true"
+            SHOULD_BUILD="true"
+            echo "New KernelSU release detected: $LATEST_KERNELSU_RELEASE"
+          fi
+
+          # Force build if requested manually
+          if [ "${{ github.event.inputs.force_build }}" = "true" ]; then
+            SHOULD_BUILD="true"
+            echo "Force build requested"
+          fi
+
+          echo "new-kernel-tag=$NEW_KERNEL_TAG" >> $GITHUB_OUTPUT
+          echo "new-kernelsu-release=$NEW_KERNELSU_RELEASE" >> $GITHUB_OUTPUT
+          echo "should-build=$SHOULD_BUILD" >> $GITHUB_OUTPUT
+          echo "kernel-tag=$LATEST_KERNEL_TAG" >> $GITHUB_OUTPUT
+          echo "kernelsu-release=$LATEST_KERNELSU_RELEASE" >> $GITHUB_OUTPUT
+
+  build-kernel:
+    needs: check-versions
+    if: needs.check-versions.outputs.should-build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set script permissions
+        run: |
+          # Set execution permissions for scripts (since we're on Linux)
+          chmod +x scripts/*.sh
+          echo "Script permissions set"
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            git \
+            curl \
+            wget \
+            zip \
+            unzip \
+            python3 \
+            python3-pip \
+            device-tree-compiler \
+            cpio \
+            rsync
+
+          # Install repo tool
+          mkdir -p ~/.bin
+          PATH="${HOME}/.bin:${PATH}"
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
+          chmod a+rx ~/.bin/repo
+
+      - name: Download kernel source
+        run: |
+          echo "Downloading kernel source with tag: ${{ needs.check-versions.outputs.kernel-tag }}"
+          git clone --depth=1 --branch=${{ needs.check-versions.outputs.kernel-tag }} \
+            https://github.com/arter97/android_kernel_nothing_sm8475.git kernel_source
+          cd kernel_source
+
+          # Verify the tag is correct
+          git describe --tags --exact-match HEAD
+          echo "Kernel source downloaded successfully"
+
+      - name: Set up Android build tools
+        run: |
+          # Download necessary Android tools
+          cd kernel_source
+
+          # Check if build_kernel.sh exists
+          if [ ! -f "build_kernel.sh" ]; then
+            echo "Error: build_kernel.sh not found in kernel source"
+            ls -la
+            exit 1
+          fi
+
+          chmod +x build_kernel.sh
+
+          # Download toolchain if not included
+          if [ ! -d "toolchain" ] && [ ! -d "prebuilts" ]; then
+            echo "Setting up toolchain..."
+            # Use AOSP toolchain
+            git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 toolchain
+          fi
+
+      - name: Integrate KernelSU Next
+        run: |
+          cd kernel_source
+          echo "Integrating KernelSU Next version: ${{ needs.check-versions.outputs.kernelsu-release }}"
+
+          # Download and integrate KernelSU Next
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+
+          # Verify integration was successful
+          if [ -d "KernelSU" ]; then
+            echo "KernelSU Next integration successful"
+            ls -la KernelSU/
+          else
+            echo "Warning: KernelSU directory not found after integration"
+          fi
+
+      - name: Build kernel
+        run: |
+          cd kernel_source
+          echo "Starting kernel compilation..."
+
+          # Configure environment variables for compilation
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-android-
+
+          # Add toolchain to PATH if it exists
+          if [ -d "toolchain/bin" ]; then
+            export PATH="$PWD/toolchain/bin:$PATH"
+          fi
+
+          # Execute compilation script
+          bash build_kernel.sh
+
+          echo "Kernel compilation completed"
+
+          # Verify generated files
+          echo "Generated files:"
+          find . -name "*.img" -type f | head -20
+          find . -name "*boot*.img" -type f | head -10
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts
+          cd kernel_source
+
+          # Search and copy boot.img files
+          find . -name "boot.img" -type f -exec cp {} ../artifacts/ \;
+          find . -name "arter97-kernel-*-boot.img" -type f -exec cp {} ../artifacts/ \;
+
+          # If we don't find specific files, search for any .img files
+          if [ ! "$(ls -A ../artifacts/)" ]; then
+            echo "No boot.img files found, searching for other image files..."
+            find . -name "*.img" -type f -exec cp {} ../artifacts/ \;
+          fi
+
+          # Create build information
+          cd ../artifacts
+          echo "Build Information:" > build_info.txt
+          echo "Kernel Tag: ${{ needs.check-versions.outputs.kernel-tag }}" >> build_info.txt
+          echo "KernelSU Release: ${{ needs.check-versions.outputs.kernelsu-release }}" >> build_info.txt
+          echo "Build Date: $(date)" >> build_info.txt
+          echo "Build ID: ${{ github.run_number }}" >> build_info.txt
+
+          echo "Artifacts prepared:"
+          ls -la
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ needs.check-versions.outputs.kernel-tag }}-kernelsu-${{ needs.check-versions.outputs.kernelsu-release }}
+          path: artifacts/
+          retention-days: 30
+
+      - name: Create Release
+        if: success()
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.check-versions.outputs.kernelsu-release }}-${{ needs.check-versions.outputs.kernel-tag }}
+          release_name: KernelSU ${{ needs.check-versions.outputs.kernelsu-release }} + Kernel ${{ needs.check-versions.outputs.kernel-tag }}
+          body: |
+            ## Auto-compiled Kernel with KernelSU Next
+
+            **Kernel Source:** arter97/android_kernel_nothing_sm8475@${{ needs.check-versions.outputs.kernel-tag }}
+            **KernelSU Version:** ${{ needs.check-versions.outputs.kernelsu-release }}
+            **Build Date:** $(date)
+
+            ### Changes
+            - New kernel tag: ${{ needs.check-versions.outputs.new-kernel-tag == 'true' && '✅' || '❌' }}
+            - New KernelSU release: ${{ needs.check-versions.outputs.new-kernelsu-release == 'true' && '✅' || '❌' }}
+
+            ### Installation
+            Flash the `boot.img` or `arter97-kernel-*-boot.img` file using fastboot or custom recovery.
+
+            **Warning:** This is an automatically compiled kernel. Use at your own risk.
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Assets
+        if: success()
+        run: |
+          # Get the ID of the newly created release
+          RELEASE_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ needs.check-versions.outputs.kernelsu-release }}-${{ needs.check-versions.outputs.kernel-tag }}" \
+            | jq -r '.id')
+
+          # Upload all artifact files as release assets
+          cd artifacts
+          for file in *; do
+            if [ -f "$file" ]; then
+              echo "Uploading $file..."
+              curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Content-Type: application/octet-stream" \
+                --data-binary @"$file" \
+                "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$file"
+            fi
+          done
+
+      - name: Update version tracking
+        if: success()
+        run: |
+          # Update processed versions file
+          echo "KERNEL_TAG=${{ needs.check-versions.outputs.kernel-tag }}" > last_versions.txt
+          echo "KERNELSU_RELEASE=${{ needs.check-versions.outputs.kernelsu-release }}" >> last_versions.txt
+          echo "LAST_BUILD_DATE=$(date)" >> last_versions.txt
+
+          # Commit and push updated file
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add last_versions.txt
+          git commit -m "Update last processed versions: K:${{ needs.check-versions.outputs.kernel-tag }} KSU:${{ needs.check-versions.outputs.kernelsu-release }}" || exit 0
+          git push
+
+      - name: Cleanup
+        if: always()
+        run: |
+          # Clean temporary files to free up space
+          rm -rf kernel_source
+          rm -rf artifacts
+          df -h
