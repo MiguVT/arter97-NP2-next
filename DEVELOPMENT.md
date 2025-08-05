@@ -66,7 +66,7 @@ sudo apt-get install -y \
     ccache \
     fakeroot \
     lz4 \
-    android-tools-mkbootimg \
+    mkbootimg \
     android-sdk-platform-tools-common
 ```
 
