@@ -296,9 +296,9 @@ jobs:
           export LLVM=1
           export LLVM_IAS=1
 
-          # Fix for Clang -ftrivial-auto-var-init=zero error - Override the CONFIG check
-          export KCFLAGS="-Wno-error=unused-command-line-argument -Wno-unknown-warning-option"
-          export KAFLAGS="-Wno-error=unused-command-line-argument -Wno-unknown-warning-option"
+          # Fix for Clang -ftrivial-auto-var-init=zero error - Force the enabler flag
+          export KCFLAGS="-Wno-error=unused-command-line-argument -Wno-unknown-warning-option -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
+          export KAFLAGS="-Wno-error=unused-command-line-argument -Wno-unknown-warning-option -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
           export CONFIG_CC_HAS_AUTO_VAR_INIT_ZERO_ENABLER=y
 
           # Add toolchain to PATH if it exists (fallback)
@@ -357,9 +357,21 @@ jobs:
           export CFLAGS_KERNEL="-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
           export CFLAGS_MODULE="-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
 
-          # Force override make flags to suppress warnings
+          # Force override make flags to suppress warnings and enable auto-var-init
           export HOSTCFLAGS="-w -Wno-error"
           export HOSTCXXFLAGS="-w -Wno-error"
+
+          # Override kernel config detection for auto-var-init
+          export CONFIG_INIT_ZERO_VAR_INIT=y
+          export CC_HAS_AUTO_VAR_INIT_ZERO_ENABLER=1
+
+          # Patch kernel Makefile to force enable the required flag
+          echo "Patching kernel Makefile for Clang compatibility..."
+          if [ -f "Makefile" ]; then
+            # Replace -ftrivial-auto-var-init=zero with the working version
+            sed -i 's/-ftrivial-auto-var-init=zero/-ftrivial-auto-var-init=zero -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang/g' Makefile
+            echo "✅ Kernel Makefile patched for Clang compatibility"
+          fi
 
           # Execute compilation script
           echo "🚀 Starting kernel compilation..."
